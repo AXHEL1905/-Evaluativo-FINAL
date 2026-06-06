@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac-Man Arcade RFID Edition</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        :root {
+            --azul: #0000ff; --amarillo: #ffff00; --rosa: #ffb8ae;
+            --rojo: #ff0000; --cyan: #00ffff; --gris: #555; --fondo: #111;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--fondo); color: white;
+            font-family: 'Press Start 2P', monospace;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: flex-start;
+            min-height: 100vh; gap: 10px; padding: 16px 8px;
+        }
+        h1 {
+            color: var(--amarillo); font-size: 18px;
+            text-shadow: 0 0 14px var(--rojo), 0 0 30px var(--amarillo);
+            letter-spacing: 3px;
+        }
+        #arcade-container {
+            position: relative; border: 4px solid var(--azul);
+            box-shadow: 0 0 24px var(--azul), inset 0 0 8px #00009a;
+            background: black;
+        }
+        canvas { display: block; }
+
+        /* OVERLAY */
+        #overlay {
+            position: absolute; inset: 0; background: rgba(0,0,0,0.88);
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; text-align: center; gap: 10px;
+            z-index: 10; padding: 16px;
+        }
+        #overlay h2 { color: var(--cyan); font-size: 13px; line-height: 1.8; text-shadow: 0 0 10px var(--cyan); }
+        .blink { animation: blinker 1.2s step-start infinite; color: var(--amarillo); font-size: 11px; }
+        @keyframes blinker { 50% { opacity: 0; } }
+        #overlay p.sub { color: #888; font-size: 8px; max-width: 280px; line-height: 1.8; }
+
+        /* PLAYER INFO */
+        #player-info { display: none; gap: 16px; font-size: 9px; color: white; }
+        #player-info span { color: var(--amarillo); }
+
+        /* STATUS BAR */
+        #status-bar { font-size: 8px; color: var(--gris); display: flex; align-items: center; gap: 6px; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: red; }
+        .dot.ok { background: lime; }
+
+        /* DEBUG PANEL */
+        #debug-panel {
+            width: 440px; background: #0a0a0a; border: 1px solid #333;
+            padding: 8px; font-size: 8px; font-family: 'Courier New', monospace;
+        }
+        #debug-panel .debug-title {
+            color: #666; margin-bottom: 6px; font-size: 8px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        #debug-log { color: #0f0; max-height: 110px; overflow-y: auto; line-height: 1.7; }
+        #debug-log .err { color: #f55; }
+        #debug-log .ok  { color: #5f5; }
+        #debug-log .warn{ color: #fa0; }
+
+        /* BOTONES DE DEBUG */
+        .debug-btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+        .debug-btns button {
+            background: #1a1a1a; color: #aaa; border: 1px solid #444;
+            padding: 5px 8px; font-size: 7px; font-family: 'Courier New', monospace;
+            cursor: pointer; transition: all 0.15s;
+        }
+        .debug-btns button:hover { background: #333; color: white; border-color: var(--cyan); }
+        .debug-btns button.primary { border-color: var(--amarillo); color: var(--amarillo); }
+
+        /* IP CONFIG */
+        #ip-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+        #ip-row input {
+            background: #111; color: #0f0; border: 1px solid #333;
+            padding: 4px 6px; font-size: 9px; font-family: 'Courier New', monospace;
+            width: 210px; outline: none;
+        }
+        #ip-row input:focus { border-color: var(--cyan); }
+        #ip-row button {
+            background: #1a1a1a; color: var(--cyan); border: 1px solid var(--cyan);
+            padding: 4px 8px; font-size: 8px; font-family: 'Courier New', monospace; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<h1>⊛ PAC-MAN ARCADE ⊛</h1>
+
+<div id="player-info">
+    JUGADOR: <span id="pi-usr">—</span> &nbsp;|&nbsp; SALDO: <span id="pi-score">0</span> pts
+</div>
+
+<div id="arcade-container">
+    <div id="overlay">
+        <h2>INSERT COIN<br>ALTERNATIVO</h2>
+        <p class="blink">◄ PASE SU TARJETA RFID ►</p>
+        <p class="sub">El juego inicia cuando el ESP32 valide tu token.</p>
+        <p id="poll-status" style="font-size:8px;color:#555;">Iniciando polling…</p>
+    </div>
+    <canvas id="pacmanCanvas" width="440" height="440"></canvas>
+</div>
+
+<div id="status-bar">
+    <span class="dot" id="dot"></span>
+    Servidor: <span id="srv-status">Verificando…</span>
+</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!--  PANEL DE DEBUG / DIAGNÓSTICO                   -->
+<!-- ═══════════════════════════════════════════════ -->
+<div id="debug-panel">
+    <div class="debug-title">
+        <span>▸ CONSOLA DE DIAGNÓSTICO</span>
+        <span id="poll-count" style="color:#555;">polls: 0</span>
+    </div>
+    <div id="debug-log">Iniciando…</div>
+
+    <div class="debug-btns">
+        <button class="primary" onclick="testConexion()">① PING SERVIDOR</button>
+        <button onclick="testUltimoMovimiento()">② VER ULTIMO-MOVIMIENTO</button>
+        <button onclick="simularRFID()">③ SIMULAR RFID MANUAL</button>
+        <button onclick="limpiarLog()" style="color:#555;">LIMPIAR LOG</button>
+    </div>
+
+    <div id="ip-row">
+        <input id="ip-input" type="text" placeholder="http://192.168.0.101:3000" />
+        <button onclick="cambiarIP()">APLICAR IP</button>
+    </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════
+let API_BASE = localStorage.getItem("arcade_api") || "http://192.168.0.101:3000";
+document.getElementById("ip-input").value = API_BASE;
+
+function cambiarIP() {
+    const val = document.getElementById("ip-input").value.trim().replace(/\/$/, "");
+    if (!val.startsWith("http")) { log("IP inválida — debe empezar con http://", "err"); return; }
+    API_BASE = val;
+    localStorage.setItem("arcade_api", API_BASE);
+    log(`IP actualizada → ${API_BASE}`, "ok");
+    detenerPolling();
+    iniciarPolling();
+}
+
+// ═══════════════════════════════════════════════════════
+//  LOGGER VISUAL
+// ═══════════════════════════════════════════════════════
+let pollCount = 0;
+function log(msg, tipo = "") {
+    const box = document.getElementById("debug-log");
+    const t   = new Date().toLocaleTimeString("es-MX", {hour12:false});
+    const div = document.createElement("div");
+    div.className = tipo;
+    div.textContent = `[${t}] ${msg}`;
+    box.appendChild(div);
+    // Mantener solo últimas 30 líneas
+    while (box.children.length > 30) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+}
+function limpiarLog() { document.getElementById("debug-log").innerHTML = ""; }
+
+// ═══════════════════════════════════════════════════════
+//  ESTADO GLOBAL
+// ═══════════════════════════════════════════════════════
+const canvas  = document.getElementById("pacmanCanvas");
+const ctx     = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+
+let gameInterval     = null;
+let score            = 0;
+let gameOver         = false;
+let jugadorRFID      = null;
+let jugadorUSR       = "";
+let jugadorSaldoPrev = 0;
+let pollingInterval  = null;
+
+// ═══════════════════════════════════════════════════════
+//  MAPA
+// ═══════════════════════════════════════════════════════
+const mapaOriginal = [
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    [1,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,1,1,1,0,1,1,1,0,1,1,0,1,1,1,0,1,1,1,0,1],
+    [1,0,1,1,1,0,1,1,1,0,1,1,0,1,1,1,0,1,1,1,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,1,1,1,0,1,0,1,1,1,1,1,1,0,1,0,1,1,1,0,1],
+    [1,0,0,0,0,0,1,0,0,0,1,1,0,0,0,1,0,0,0,0,0,1],
+    [1,1,1,1,1,0,1,1,1,2,1,1,2,1,1,1,0,1,1,1,1,1],
+    [2,2,2,2,1,0,1,2,2,2,2,2,2,2,2,1,0,1,2,2,2,2],
+    [1,1,1,1,1,0,1,2,1,1,2,2,1,1,2,1,0,1,1,1,1,1],
+    [2,2,2,2,2,0,2,2,1,2,2,2,2,1,2,2,0,2,2,2,2,2],
+    [1,1,1,1,1,0,1,2,1,1,1,1,1,1,2,1,0,1,1,1,1,1],
+    [2,2,2,2,1,0,1,2,2,2,2,2,2,2,2,1,0,1,2,2,2,2],
+    [1,1,1,1,1,0,1,2,1,1,1,1,1,1,2,1,0,1,1,1,1,1],
+    [1,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,1,1,1,0,1,1,1,0,1,1,0,1,1,1,0,1,1,1,0,1],
+    [1,0,0,0,1,0,0,0,0,0,2,2,0,0,0,0,0,1,0,0,0,1],
+    [1,1,1,0,1,0,1,0,1,1,1,1,1,1,0,1,0,1,0,1,1,1],
+    [1,0,0,0,0,0,1,0,0,0,1,1,0,0,0,1,0,0,0,0,0,1],
+    [1,0,1,1,1,1,1,1,1,0,1,1,0,1,1,1,1,1,1,1,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+let map = mapaOriginal.map(r => [...r]);
+const tileSize = 20;
+let pacman = { x:1, y:1, dirX:0, dirY:0, nextDirX:0, nextDirY:0 };
+let ghost  = { x:10, y:10, dirX:1, dirY:0, color:"red" };
+
+// ═══════════════════════════════════════════════════════
+//  POLLING
+// ═══════════════════════════════════════════════════════
+function iniciarPolling() {
+    log(`Polling iniciado → ${API_BASE}/api/ultimo-movimiento`, "ok");
+    setSrvStatus("Polling activo…", true);
+
+    pollingInterval = setInterval(async () => {
+        pollCount++;
+        document.getElementById("poll-count").textContent = `polls: ${pollCount}`;
+        try {
+            const res  = await fetch(`${API_BASE}/api/ultimo-movimiento`, { cache: "no-store" });
+
+            if (!res.ok) {
+                log(`HTTP ${res.status} en ultimo-movimiento`, "err");
+                setSrvStatus(`Error HTTP ${res.status}`, false);
+                return;
+            }
+
+            const data = await res.json();
+            const id   = data.id_rfid || "";
+
+            // Mostrar la respuesta raw cada 10 polls para no saturar
+            if (pollCount % 10 === 0) {
+                log(`Respuesta: ${JSON.stringify(data)}`, "");
+            }
+
+            if (id && id !== "--------" && id !== "") {
+                log(`✓ RFID detectado: ${id} | usr: ${data.usr} | score: ${data.score}`, "ok");
+                detenerPolling();
+                jugadorRFID      = id;
+                jugadorUSR       = data.usr  || `User_${id.substring(0,4)}`;
+                jugadorSaldoPrev = data.score || 0;
+                arrancarJuego();
+            }
+        } catch (e) {
+            log(`Fetch falló: ${e.message}`, "err");
+            setSrvStatus("Sin respuesta", false);
+        }
+    }, 1500);
+}
+
+function detenerPolling() {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+    log("Polling detenido.", "warn");
+}
+
+// ═══════════════════════════════════════════════════════
+//  FUNCIONES DE DEBUG (botones)
+// ═══════════════════════════════════════════════════════
+async function testConexion() {
+    log(`Probando ping a ${API_BASE}/api/ultimo-movimiento …`, "warn");
+    try {
+        const r = await fetch(`${API_BASE}/api/ultimo-movimiento`, { cache: "no-store" });
+        const d = await r.json();
+        log(`PING OK ✓  →  ${JSON.stringify(d)}`, "ok");
+        setSrvStatus("Conectado", true);
+    } catch(e) {
+        log(`PING FALLÓ ✗  →  ${e.message}`, "err");
+        log("Posibles causas: IP incorrecta, CORS bloqueado, servidor caído.", "err");
+        setSrvStatus("Sin conexión", false);
+    }
+}
+
+async function testUltimoMovimiento() {
+    log("Consultando /api/ultimo-movimiento …", "warn");
+    try {
+        const r = await fetch(`${API_BASE}/api/ultimo-movimiento`, { cache: "no-store" });
+        const d = await r.json();
+        log(`Respuesta completa: ${JSON.stringify(d)}`, d.id_rfid !== "--------" ? "ok" : "warn");
+    } catch(e) {
+        log(`Error: ${e.message}`, "err");
+    }
+}
+
+function simularRFID() {
+    log("Simulando escaneo RFID manual (RFID_TEST_001)…", "warn");
+    detenerPolling();
+    jugadorRFID      = "RFID_TEST_001";
+    jugadorUSR       = "TestPlayer";
+    jugadorSaldoPrev = 500;
+    arrancarJuego();
+}
+
+// ═══════════════════════════════════════════════════════
+//  JUEGO
+// ═══════════════════════════════════════════════════════
+function arrancarJuego() {
+    map = mapaOriginal.map(r => [...r]);
+    score = 0; gameOver = false;
+    pacman = { x:1, y:1, dirX:0, dirY:0, nextDirX:0, nextDirY:0 };
+    ghost  = { x:10, y:10, dirX:1, dirY:0, color:"red" };
+    document.getElementById("pi-usr").textContent   = jugadorUSR;
+    document.getElementById("pi-score").textContent = jugadorSaldoPrev;
+    document.getElementById("player-info").style.display = "flex";
+    overlay.style.display = "none";
+    if (gameInterval) clearInterval(gameInterval);
+    gameInterval = setInterval(update, 150);
+    log(`Juego iniciado para ${jugadorUSR} (saldo previo: ${jugadorSaldoPrev})`, "ok");
+}
+
+function volverAEspera() {
+    clearInterval(gameInterval);
+    gameInterval = null;
+    jugadorRFID = null;
+    document.getElementById("player-info").style.display = "none";
+    overlay.style.display = "flex";
+    document.getElementById("poll-status").textContent = "Esperando nueva tarjeta…";
+    pollCount = 0;
+    log("─── Volviendo a pantalla de espera ───", "warn");
+    iniciarPolling();
+}
+
+window.addEventListener("keydown", e => {
+    const dirs = {
+        ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0],
+        w:[0,-1], s:[0,1], a:[-1,0], d:[1,0]
+    };
+    const d = dirs[e.key];
+    if (d) { pacman.nextDirX = d[0]; pacman.nextDirY = d[1]; }
+});
+
+function update() {
+    if (gameOver) return;
+    if (map[pacman.y + pacman.nextDirY]?.[pacman.x + pacman.nextDirX] !== 1) {
+        pacman.dirX = pacman.nextDirX; pacman.dirY = pacman.nextDirY;
+    }
+    if (map[pacman.y + pacman.dirY]?.[pacman.x + pacman.dirX] !== 1) {
+        pacman.x += pacman.dirX; pacman.y += pacman.dirY;
+    }
+    if (map[pacman.y][pacman.x] === 0) { map[pacman.y][pacman.x] = 2; score += 10; }
+
+    const dirs = [{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}];
+    const validos = dirs.filter(d => map[ghost.y+d.y]?.[ghost.x+d.x] !== 1);
+    if (validos.length > 0 && (Math.random() < 0.3 || map[ghost.y+ghost.dirY]?.[ghost.x+ghost.dirX] === 1)) {
+        const e = validos[Math.floor(Math.random() * validos.length)];
+        ghost.dirX = e.x; ghost.dirY = e.y;
+    }
+    ghost.x += ghost.dirX; ghost.y += ghost.dirY;
+
+    if (pacman.x === ghost.x && pacman.y === ghost.y) {
+        gameOver = true;
+        clearInterval(gameInterval);
+        log(`Game Over — score: ${score} pts`, "warn");
+        enviarPuntuacion();
+        setTimeout(() => {
+            alert(`¡GAME OVER!\nPuntuación: ${score} pts\nSaldo previo: ${jugadorSaldoPrev} pts\nNuevo total enviado al servidor.`);
+            volverAEspera();
+        }, 80);
+    }
+    draw();
+}
+
+async function enviarPuntuacion() {
+    if (!jugadorRFID || jugadorRFID === "RFID_TEST_001") {
+        log("Score de prueba — no se envía al servidor.", "warn"); return;
+    }
+    const body = { id_rfid: jugadorRFID, usr: jugadorUSR, name_disp: "Arcade_HTML5", score };
+    log(`POST /api/puntuaciones → ${JSON.stringify(body)}`, "warn");
+    try {
+        const res  = await fetch(`${API_BASE}/api/puntuaciones`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        log(`POST OK ✓ → total_score: ${data.total_score}`, "ok");
+    } catch (e) {
+        log(`POST falló: ${e.message}`, "err");
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════
+function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = "black"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    for (let r=0;r<map.length;r++) for (let c=0;c<map[r].length;c++) {
+        if (map[r][c]===1) {
+            ctx.fillStyle="#0000cc"; ctx.fillRect(c*tileSize,r*tileSize,tileSize,tileSize);
+            ctx.strokeStyle="#4444ff"; ctx.lineWidth=1;
+            ctx.strokeRect(c*tileSize+1,r*tileSize+1,tileSize-2,tileSize-2);
+        } else if (map[r][c]===0) {
+            ctx.fillStyle="#ffb8ae"; ctx.beginPath();
+            ctx.arc(c*tileSize+tileSize/2,r*tileSize+tileSize/2,3,0,Math.PI*2); ctx.fill();
+        }
+    }
+    const rad=tileSize/2, cx=pacman.x*tileSize+rad, cy=pacman.y*tileSize+rad;
+    ctx.fillStyle="#ffff00"; ctx.beginPath();
+    ctx.arc(cx,cy,rad-1,0.25*Math.PI,1.75*Math.PI); ctx.lineTo(cx,cy); ctx.fill();
+
+    const gx=ghost.x*tileSize, gy=ghost.y*tileSize;
+    ctx.fillStyle=ghost.color; ctx.beginPath();
+    ctx.arc(gx+rad,gy+rad,rad-1,Math.PI,0,false);
+    ctx.lineTo(gx+tileSize-1,gy+tileSize); ctx.lineTo(gx+1,gy+tileSize); ctx.fill();
+    ctx.fillStyle="white"; ctx.fillRect(gx+4,gy+4,4,4); ctx.fillRect(gx+12,gy+4,4,4);
+    ctx.fillStyle="blue";  ctx.fillRect(gx+5,gy+5,2,2); ctx.fillRect(gx+13,gy+5,2,2);
+
+    ctx.fillStyle="white"; ctx.font="bold 13px 'Courier New'";
+    ctx.fillText(`SCORE: ${score}`,10,14);
+}
+
+function setSrvStatus(msg,ok) {
+    document.getElementById("srv-status").textContent = msg;
+    document.getElementById("dot").className = "dot"+(ok?" ok":"");
+}
+
+draw();
+iniciarPolling();
+</script>
+</body>
+</html>
